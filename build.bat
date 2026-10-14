@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 
 set "CONFIG=Release"
-set "SLN=src\turmoil\turmoil.csproj"
+set "SLN=turmoil.sln"
 set "GAME=C:\Games\Turmoil"
 
 if not exist "lib\BepInEx.dll" (

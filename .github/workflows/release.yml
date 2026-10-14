@@ -1,0 +1,88 @@
+# Continuous deployment: every push to master rebuilds tmmod.dll and overwrites
+# the rolling "latest" GitHub release, so the Releases page always hosts the
+# newest build under a permanent download link. The mod version is read from
+# <Version> in src/turmoil/turmoil.csproj. Reference assemblies are fetched and
+# generated during CI; lib/ is gitignored and nothing binary is committed.
+
+name: release
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Fetch dependencies (official BepInEx x64 release)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'bepinex-win-x64.zip'
+          Invoke-WebRequest -Uri 'https://github.com/BepInEx/BepInEx/releases/download/v5.4.23.5/BepInEx_win_x64_5.4.23.5.zip' -OutFile $zip
+          New-Item -ItemType Directory lib -Force | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            foreach ($n in 'BepInEx/core/BepInEx.dll', 'BepInEx/core/0Harmony.dll') {
+              $e = $archive.Entries | Where-Object FullName -eq $n
+              if (-not $e) { throw "entry not found: $n" }
+              [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, (Join-Path 'lib' ([System.IO.Path]::GetFileName($n))), $true)
+            }
+          } finally { $archive.Dispose() }
+          Get-ChildItem lib | Format-Table Name, Length
+
+      - name: Build
+        run: dotnet build turmoil.sln -c Release
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $line = (Get-Content src/turmoil/turmoil.csproj | Select-String -Pattern '<Version>').Line
+          $version = [regex]::Match($line, '<Version>([^<]+)</Version>').Groups[1].Value
+          if (-not $version) {
+            Write-Error "Could not read <Version> from src/turmoil/turmoil.csproj"
+            exit 1
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+          New-Item -ItemType Directory dist -Force | Out-Null
+          Set-Content dist/install.txt -Value "tmmod $version (Turmoil BepInEx cheat panel)`nInstall: copy tmmod.dll into BepInEx\plugins\tmmod\ inside your Turmoil folder, then restart the game.`nIn game: press Insert to toggle the panel.`nRequires: BepInEx 5, x64 build (64-bit game)."
+          Compress-Archive -Path "Build/Release/tmmod.dll", "dist/install.txt" -DestinationPath dist/tmmod.zip -Force
+          $hash = (Get-FileHash dist/tmmod.zip -Algorithm SHA256).Hash.ToLower()
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.package.outputs.version }}
+        shell: pwsh
+        run: |
+          $asset = "dist/tmmod.zip"
+          $commit = "${{ github.sha }}".Substring(0, 7)
+          $tag = "v$env:VERSION"
+          $title = "tmmod $tag"
+          $notes = "Built from commit $commit`nSHA256: ${{ steps.package.outputs.sha256 }}"
+          gh release upload $tag $asset --clobber
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag $asset --title $title --target ${{ github.sha }} --notes $notes
+          } else {
+            gh release edit $tag --title $title --notes $notes
+          }
+          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/$tag
+          gh api -X POST repos/${{ github.repository }}/git/refs -f ref="refs/tags/$tag" -f sha="${{ github.sha }}"
+          gh release edit $tag --draft=false

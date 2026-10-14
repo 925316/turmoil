@@ -3,19 +3,22 @@
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
     <LangVersion>latest</LangVersion>
+    <Version>1.0.0</Version>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <OutputPath>..\..\Build\$(Configuration)\</OutputPath>
     <AssemblyName>tmmod</AssemblyName>
     <RootNamespace>tmmod</RootNamespace>
-    <GameManaged Condition="'$(GameManaged)' == ''">C:\Games\Turmoil\Turmoil_Data\Managed</GameManaged>
   </PropertyGroup>
 
   <!--
-    BepInEx/0Harmony come from lib\ (extracted from the official x64 pack, not committed).
-    UnityEngine.CoreModule is referenced straight from the game install: game types are
-    reached via runtime reflection, so no stub projects and no committed binaries.
-    Private=false keeps all references out of the output folder; at runtime they bind
-    to the real game-loaded assemblies.
+    Two kinds of references, zero committed binaries:
+    - BepInEx.dll / 0Harmony.dll come from lib\ (extracted from the official x64
+      pack; fetched inline by CI, locally by hand).
+    - Unity types come from the stub projects (src\stub\), which mirror the real
+      member kinds verified against the game's Managed folder. ProjectReference
+      also forces stubs to build BEFORE tmmod. At runtime all of these bind to
+      the real game-loaded assemblies (names/versions match).
+    Game types (Assembly-CSharp, Turmoil) are reached via runtime reflection only.
   -->
   <ItemGroup>
     <Reference Include="BepInEx">
@@ -26,22 +29,12 @@
       <HintPath>..\..\lib\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="UnityEngine.CoreModule">
-      <HintPath>$(GameManaged)\UnityEngine.CoreModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="UnityEngine">
-      <HintPath>$(GameManaged)\UnityEngine.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="UnityEngine.IMGUIModule">
-      <HintPath>$(GameManaged)\UnityEngine.IMGUIModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="UnityEngine.TextRenderingModule">
-      <HintPath>$(GameManaged)\UnityEngine.TextRenderingModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\stub\unity.core\UnityCoreStub.csproj" />
+    <ProjectReference Include="..\stub\unity.facade\UnityFacadeStub.csproj" />
+    <ProjectReference Include="..\stub\unity.imgui\UnityImguiStub.csproj" />
   </ItemGroup>
 
 </Project>
