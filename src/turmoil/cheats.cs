@@ -215,6 +215,15 @@ internal static class LevelCheats
         ((Delegate)evt).DynamicInvoke(well, args);
     }
 
+    internal static string MaxEverything()
+    {
+        string pipes;
+        try { pipes = MaxAllPipes(); } catch (Exception e) { pipes = "pipes failed: " + e.Message; }
+        string rig;
+        try { rig = MaxRigSpeed(); } catch (Exception e) { rig = "rig failed: " + e.Message; }
+        return pipes + "; " + rig;
+    }
+
     private static object RequireLevel()
     {
         object level = Sim.Level();
@@ -227,31 +236,71 @@ internal static class LevelCheats
     }
 }
 
-// Flow rates reset with every level (fresh Config); re-apply once per Config instance.
+// Flow rates reset with every level (fresh Config); apply once per Config instance,
+// and restore originals when the boost is turned off so on/off (or on/off/on) never
+// compounds the multiplier.
 internal static class FlowBoost
 {
     internal static bool Enabled;
     internal static float Factor = 5f;
-    private static object _applied;
 
-    internal static string Apply(object level, PropertyInfo configProp)
+    private static readonly string[] Names = { "PipeOilTransfer", "PipeGasTransfer", "WagonTransfer", "ElbowOilStorage", "ElbowGasStorage", "RigOilCapacity" };
+
+    private static object _boostedConfig;        // the LevelConfig instance currently boosted
+    private static float _boostedFactor;           // factor used to build _boostedConfig
+    private static Dictionary<string, object> _saved; // backups of pre-boost values
+
+    internal static string Apply(object config)
     {
-        if (!Enabled)
+        if (!Enabled || config == null)
         {
             return null;
         }
 
-        object config = configProp.GetValue(level);
-        if (ReferenceEquals(config, _applied))
+        // Same config already boosted with the same factor: do nothing (idempotent).
+        if (ReferenceEquals(config, _boostedConfig) && _boostedFactor == Factor)
         {
             return null;
         }
 
-        _applied = config;
+        // Different factor on the same config, or boost lost track: restore first.
+        if (_boostedConfig != null && ReferenceEquals(config, _boostedConfig))
+        {
+            Restore(config);
+        }
+
+        // New config instance: boost it and remember what we changed.
+        if (!ReferenceEquals(config, _boostedConfig))
+        {
+            _saved = new Dictionary<string, object>();
+            foreach (string name in Names)
+            {
+                FieldInfo f = config.GetType().GetField(name, Game.F);
+                if (f == null) continue;
+                object value = f.GetValue(config);
+                if (value is Array a)
+                {
+                    _saved[name] = a.Clone();
+                }
+                else
+                {
+                    _saved[name] = value;
+                }
+            }
+
+            FieldInfo speedCap = config.GetType().GetField("WagonMaxTransferSpeed", Game.F);
+            if (speedCap != null)
+            {
+                _saved["WagonMaxTransferSpeed"] = speedCap.GetValue(config);
+            }
+        }
+
+        // Apply the boost to the config (arrays + scalars).
         Type t = config.GetType();
-        foreach (string name in new[] { "PipeOilTransfer", "PipeGasTransfer", "WagonTransfer", "ElbowOilStorage", "ElbowGasStorage", "RigOilCapacity" })
+        foreach (string name in Names)
         {
             FieldInfo item = t.GetField(name, Game.F);
+            if (item == null) continue;
             object value = item.GetValue(config);
             if (value is Array array)
             {
@@ -266,26 +315,88 @@ internal static class FlowBoost
             }
         }
 
-        FieldInfo speedCap = t.GetField("WagonMaxTransferSpeed", Game.F);
-        if (speedCap != null)
+        FieldInfo speedField = t.GetField("WagonMaxTransferSpeed", Game.F);
+        if (speedField != null)
         {
-            speedCap.SetValue(config, Fx.Mul32(speedCap.GetValue(config), Factor));
+            speedField.SetValue(config, Fx.Mul32(speedField.GetValue(config), Factor));
         }
 
+        _boostedConfig = config;
+        _boostedFactor = Factor;
         return "flow boosted x" + Factor;
+    }
+
+    internal static void SetEnabled(bool on)
+    {
+        if (on == Enabled)
+        {
+            return;
+        }
+
+        // Turning off: undo the boost on the instance we touched, if still tracked.
+        if (!on && _boostedConfig != null)
+        {
+            Restore(_boostedConfig);
+            _boostedConfig = null;
+            _saved = null;
+        }
+
+        Enabled = on;
     }
 
     internal static void ResetApplied()
     {
-        _applied = null;
+        if (_boostedConfig != null && _saved != null)
+        {
+            Restore(_boostedConfig);
+        }
+
+        _boostedConfig = null;
+        _saved = null;
+    }
+
+    private static void Restore(object config)
+    {
+        if (config == null || _saved == null)
+        {
+            return;
+        }
+
+        Type t = config.GetType();
+        if (_saved.TryGetValue("WagonMaxTransferSpeed", out object speedSaved))
+        {
+            FieldInfo speedCap = t.GetField("WagonMaxTransferSpeed", Game.F);
+            if (speedCap != null)
+            {
+                speedCap.SetValue(config, speedSaved);
+            }
+        }
+
+        foreach (string name in Names)
+        {
+            if (!_saved.TryGetValue(name, out object orig))
+            {
+                continue;
+            }
+
+            FieldInfo item = t.GetField(name, Game.F);
+            if (item == null) continue;
+            object current = item.GetValue(config);
+            if (orig is Array origArray && current is Array currArray)
+            {
+                Array.Copy(origArray, currArray, Math.Min(origArray.Length, currArray.Length));
+            }
+            else
+            {
+                item.SetValue(config, orig);
+            }
+        }
     }
 }
 
-// Config is fetched constantly by the sim; postfix is the earliest reliable
-// per-level hook without chasing the LevelScript init order.
-[HarmonyPatch]
 internal static class ConfigGetterPatch
 {
+    [ThreadStatic] private static bool _inPostfix;
     private static PropertyInfo _configProp;
 
     private static MethodBase TargetMethod()
@@ -295,24 +406,35 @@ internal static class ConfigGetterPatch
 
     private static void Postfix(object __instance)
     {
+        // Re-entrancy guard: the patch runs on every get_Config, and FlowBoost used to
+        // call the property getter again from here, which re-entered this postfix and
+        // overflowed the stack. While we are inside, just return for nested calls.
+        if (_inPostfix)
+        {
+            return;
+        }
+
         if (!FlowBoost.Enabled)
         {
             return;
         }
 
-        _configProp ??= __instance.GetType().GetProperty("Config", Game.F);
+        _inPostfix = true;
         try
         {
-            string result = FlowBoost.Apply(__instance, _configProp);
-            if (result != null)
-            {
-                MainLogger.Log(result);
-            }
+            _configProp ??= __instance.GetType().GetProperty("Config", Game.F);
+            object config = _configProp.GetValue(__instance);
+            string result = FlowBoost.Apply(config);
+            if (result != null) MainLogger.Log(result);
         }
         catch (Exception ex)
         {
-            FlowBoost.Enabled = false;
+            FlowBoost.SetEnabled(false);
             MainLogger.Warn("flow boost failed, disabled: " + ex.Message);
+        }
+        finally
+        {
+            _inPostfix = false;
         }
     }
 }

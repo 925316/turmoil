@@ -62,7 +62,9 @@ jobs:
 
           New-Item -ItemType Directory dist -Force | Out-Null
           Set-Content dist/install.txt -Value "tmmod $version (Turmoil BepInEx cheat panel)`nInstall: copy tmmod.dll into BepInEx\plugins\tmmod\ inside your Turmoil folder, then restart the game.`nIn game: press Insert to toggle the panel.`nRequires: BepInEx 5, x64 build (64-bit game)."
-          Compress-Archive -Path "Build/Release/tmmod.dll", "dist/install.txt" -DestinationPath dist/tmmod.zip -Force
+          New-Item -ItemType Directory -Path "dist/BepInEx/plugins/tmmod" -Force | Out-Null
+          Copy-Item "Build/Release/tmmod.dll" "dist/BepInEx/plugins/tmmod/tmmod.dll"
+          Compress-Archive -Path "dist/BepInEx", "dist/install.txt" -DestinationPath dist/tmmod.zip -Force
           $hash = (Get-FileHash dist/tmmod.zip -Algorithm SHA256).Hash.ToLower()
           "sha256=$hash" >> $env:GITHUB_OUTPUT
 

@@ -21,6 +21,7 @@ public class Plugin : BaseUnityPlugin
     private ConfigEntry<float> _wellRadiusFactor;
     private ConfigEntry<float> _wellOilFactor;
 
+
     private bool _visible = true;
     private Rect _windowRect;
     private string _oilPriceText = "3.5";
@@ -50,7 +51,7 @@ public class Plugin : BaseUnityPlugin
             _flowFactorText = _flowFactor.Value.ToString("0.##");
             _wellRadiusText = _wellRadiusFactor.Value.ToString("0.##");
             _wellOilText = _wellOilFactor.Value.ToString("0.##");
-            _windowRect = new Rect(_windowX.Value, _windowY.Value, 300f, 172f);
+            _windowRect = new Rect(_windowX.Value, _windowY.Value, 300f, 200f);
 
             new HarmonyLib.Harmony(PluginGuid).PatchAll(typeof(Plugin).Assembly);
 
@@ -116,6 +117,10 @@ public class Plugin : BaseUnityPlugin
         {
             RunSafe("rig", () => LevelCheats.MaxRigSpeed());
         }
+        if (GUILayout.Button("Max All"))
+        {
+            RunSafe("maxall", () => LevelCheats.MaxEverything());
+        }
         GUILayout.EndHorizontal();
 
         GUILayout.BeginHorizontal();
@@ -129,9 +134,14 @@ public class Plugin : BaseUnityPlugin
 
         if (flowOn != FlowBoost.Enabled)
         {
-            FlowBoost.Enabled = flowOn;
             FlowBoost.Factor = ParseFloat(_flowFactorText, _flowFactor.Value);
-            FlowBoost.ResetApplied();
+            _flowFactor.Value = FlowBoost.Factor;
+            FlowBoost.SetEnabled(flowOn);
+            if (flowOn)
+            {
+                FlowBoost.ResetApplied();
+            }
+
             _status = flowOn ? "flow boost ON x" + FlowBoost.Factor : "flow boost OFF";
         }
 
